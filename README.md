@@ -1,144 +1,140 @@
-# QA Experiment — Task Manager
+# When the Agent Chooses
 
-A simple Task Management web app used as a test target for exploring AI-assisted QA automation and a human-in-the-loop CI/CD pipeline.
+A small experiment in QA agent autonomy.
 
----
+The agent uses Claude API tool use to autonomously decide which tools to call —
+issues, commits, and source code — when asked to assess a small target
+repository. Two prompt versions are included: one that frames the agent as a
+senior QA engineer, and one that strips all QA framing out.
 
-## Tech Stack
+This code accompanies a Medium article series of the same name. The articles
+describe what was observed. This repo is for readers who would rather run it
+themselves and see what they observe.
 
-| Layer | Technology |
-|---|---|
-| App backend | Python 3.13, Flask, SQLite |
-| App frontend | Vanilla JavaScript, HTML/CSS |
-| Test automation | pytest, Playwright (UI), requests (API) |
-| CI/CD | GitHub Actions |
-| AI analysis | Claude API (Haiku) — failure triage in CI |
-| Notifications | Telegram Bot |
+## What the agent can call
 
----
+The agent has four tools available. Which ones it uses, in what order, and
+when to stop is its own decision.
 
-## Repository Structure
+- `get_issues` — GitHub API, fetches open/closed issues from the target repo
+- `get_commits` — GitHub API, fetches recent commit history
+- `get_commit_diff` — GitHub API, fetches the diff for a specific commit
+- `get_file_content` — reads source files from this local repository
+
+Three tools talk to GitHub. `get_file_content` reads from disk — the Task
+Manager source (`app.py`, `templates/index.html`) lives in this repo and the
+agent inspects it locally.
+
+## What's in this repo
 
 ```
-qa-agent-project/
-├── app.py                     # Flask Task Manager app
+qa-autonomy-project/
+├── agent/
+│   ├── qa_agent.py        # The agent loop
+│   ├── tools.py           # Tool definitions and execution
+│   └── prompts/
+│       ├── __init__.py    # Loads prompt by PROMPT_VERSION env var
+│       ├── v0.py          # Neutral prompt — no QA framing
+│       └── v1.py          # QA-framed prompt — senior QA identity, classifications
 ├── templates/
-│   └── index.html             # Frontend UI
-├── tests/
-│   ├── conftest.py            # Auto-cleanup fixture
-│   ├── test_smoke.py
-│   ├── test_create_task.py    # TC-001 to TC-005b
-│   ├── test_display_filter.py # TC-008 to TC-012
-│   ├── test_update_task.py    # TC-013 to TC-018
-│   ├── test_delete_task.py    # TC-019 to TC-020
-│   └── test_api_validation.py # TC-022 to TC-026
-├── analyze_failures.py        # Claude AI failure analysis (CI step)
-├── webhook_server.py          # Telegram webhook → GitHub dispatch
-├── .github/
-│   └── workflows/
-│       ├── ci.yml             # Main pipeline: test → analyze → notify
-│       └── gate.yml           # Human decision gate
-├── pytest.ini
-└── requirements.txt
+│   └── index.html         # Task Manager frontend
+├── app.py                 # Task Manager web app — Flask + SQLite
+├── output/                # Agent reports written here (gitignored)
+├── .env.example           # Template for environment variables
+├── .gitignore
+├── requirements.txt
+├── LICENSE
+└── README.md
 ```
 
----
+## What's not in this repo, and why
 
-## Local Setup
+The reports the agent produced during the experiment are deliberately not
+committed.
 
-**Prerequisites:** Python 3.13+
+The experiment compared two prompt versions, but each was run only once. That
+is enough to observe behavior; it is not enough to claim one version
+consistently produced a better report than the other. Committing the raw
+single-run outputs would invite a comparison the experiment is not equipped
+to support.
+
+If you want to see what the agent produces, the more honest path is to run it
+yourself.
+
+## Setup
+
+Requires Python 3.13. From the repo root:
 
 ```bash
-# Clone and enter the repo
-git clone https://github.com/<your-username>/qa-agent-project.git
-cd qa-agent-project
-
-# Create virtual environment
-python3 -m venv venv
+python -m venv venv
 source venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Install Playwright browser
-playwright install chromium
+cp .env.example .env
 ```
 
-**Run the app:**
+Then edit `.env` and fill in:
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+GITHUB_TOKEN=ghp_...
+GITHUB_REPO=your-username/your-target-repo
+PROMPT_VERSION=v1
+```
+
+The `GITHUB_TOKEN` needs read access to issues on the target repo. The default
+model is `claude-haiku-4-5-20251001`; override it by setting `CLAUDE_MODEL` if
+you want to use a different one.
+
+`.env` is gitignored. Do not commit it.
+
+## Running the experiment
+
+The agent reads `PROMPT_VERSION` from the environment to decide which prompt
+to use.
+
+Run with the QA-framed prompt:
+
+```bash
+PROMPT_VERSION=v1 python agent/qa_agent.py
+```
+
+Run with the neutral prompt:
+
+```bash
+PROMPT_VERSION=v0 python agent/qa_agent.py
+```
+
+Reports are written to `output/qa_report_<version>_<timestamp>.md`. Every tool
+call the agent makes is logged to the terminal as it happens, along with its
+reasoning. The log is the more interesting part of the run.
+
+## The two prompts
+
+`v1.py` frames the agent as a senior QA engineer, gives it classification
+vocabulary (`confirmed_bug` / `requirement_gap` / `weak_signal` /
+`out_of_scope`), and provides four guiding questions about the codebase.
+
+`v0.py` removes all of that. No identity. No QA vocabulary. The task is
+described as analyzing a repository, without naming what kind of analysis.
+The available tools are the same; only the prompt differs.
+
+What changes when those words are removed is the experiment.
+
+## The target app
+
+A small Task Manager web app (Flask + SQLite + vanilla JS) is included as the
+target for the agent to analyze. It has a handful of intentionally-filed
+issues on its own GitHub repo.
+
+You can run it locally:
 
 ```bash
 python app.py
-# Runs at http://127.0.0.1:5000
 ```
 
-**Run the tests** (app must be running):
+It listens on `http://localhost:5000`. The agent does not need the app to be
+running — it reads from the GitHub repo, not from a live server.
 
-```bash
-# All tests
-pytest
+## License
 
-# Single file
-pytest tests/test_create_task.py -v
-
-# Headed browser (visible)
-pytest --headed
-```
-
-HTML report is generated at `reports/report.html`.
-
----
-
-## CI/CD Pipeline
-
-```
-Push / PR
-    │
-    ▼
-ci.yml
-├── Install dependencies
-├── Start Flask app
-├── Run pytest
-├── Claude analyzes failures  ──► Anthropic API
-└── Send report to Telegram   ──► Telegram Bot
-         │
-         ▼
-  Human reviews on Telegram
-  /approve  or  /reject
-         │
-         ▼
-gate.yml
-├── APPROVE → pipeline passes
-└── REJECT  → pipeline fails
-```
-
-Claude reads the pytest output and returns a BUG / FLAKY verdict per failure, plus an overall APPROVE / REJECT recommendation. The human makes the final call via Telegram before the build result is set.
-
-### Required GitHub Secrets
-
-| Secret | Description |
-|---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token |
-| `TELEGRAM_CHAT_ID` | Your Telegram chat ID |
-
-### Required for webhook server
-
-| Environment Variable | Description |
-|---|---|
-| `GITHUB_TOKEN` | Personal access token with `repo` scope |
-| `GITHUB_REPO` | e.g. `your-username/qa-agent-project` |
-
----
-
-## Test Coverage
-
-| File | Test Cases | Area |
-|---|---|---|
-| test_smoke.py | TC-000 | Page load |
-| test_create_task.py | TC-001 to TC-005b | Task creation, input validation |
-| test_display_filter.py | TC-008 to TC-012 | Display, filter tabs, stats bar |
-| test_update_task.py | TC-013 to TC-018 | Edit, toggle, keyboard shortcuts |
-| test_delete_task.py | TC-019 to TC-020 | Delete via UI and API |
-| test_api_validation.py | TC-022 to TC-026 | API response format, error handling |
-
-**Note on TC-025:** The backend does not validate the `completed` field — passing `"yes"` returns 500 instead of 400. The test is written against the expected behavior and will fail until the bug is fixed. This is intentional.
+MIT. See `LICENSE`.
